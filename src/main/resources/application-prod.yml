@@ -1,0 +1,7 @@
+# Production profile. Hibernate updates the schema (project decision, no Flyway).
+# Take a database backup BEFORE every production deploy and review schema changes.
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false

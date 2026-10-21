@@ -1,0 +1,22 @@
+# Development profile.
+#
+# Database credentials are NOT kept in this file. Put them in backend/.env (ignored by git; application.yml imports it):
+#   DB_URL=jdbc:mysql://<host>:<port>/<database>?ssl-mode=REQUIRED
+#   DB_USER=<user>
+#   DB_PASSWORD=<password>
+#   BOOTSTRAP_CLAIM_ADMIN_PASSWORD=<a password of at least 12 characters, used once, changed at first sign-in>
+#   BOOTSTRAP_PRODUCT_MANAGER_PASSWORD=<same>
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+
+app:
+  security:
+    device-hmac-key: dev-only-hmac-key-change-me-0123456789abcdef
+    device-encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+  bootstrap:
+    # Emails only. There is deliberately no default password: an account is created only when its password is set in .env.
+    claim-admin-email: ${BOOTSTRAP_CLAIM_ADMIN_EMAIL:owner@ambika.local}
+    product-manager-email: ${BOOTSTRAP_PRODUCT_MANAGER_EMAIL:manager@ambika.local}

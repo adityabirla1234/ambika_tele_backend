@@ -1,0 +1,152 @@
+spring:
+  profiles:
+    # SWITCH HERE: dev (on your computer) or prod (Render). Only the profile blocks at the bottom of this file differ.
+    active: dev
+  application:
+    name: ambika-rewards
+  config:
+    # Optional local file backend/.env with KEY=VALUE lines (DB_URL=..., DEVICE_HMAC_KEY=...). Ignored when absent (Render).
+    import: optional:file:.env[.properties]
+  servlet:
+    multipart:
+      enabled: false          # no file uploads exist; refuse multipart bodies outright
+  jpa:
+    open-in-view: false
+    # Hibernate updates the schema (project decision, no Flyway). Take a database backup BEFORE every deploy.
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+      connection-timeout: 10000
+      max-lifetime: 1500000
+
+server:
+  port: ${PORT:8080}
+  max-http-request-header-size: 8KB
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+    include-exception: false
+  tomcat:
+    max-http-form-post-size: 64KB
+    max-swallow-size: 64KB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  # The log format itself (correlation id and the digit mask) is in logback-spring.xml.
+  level:
+    org.hibernate.SQL: WARN                 # never print SQL
+    org.hibernate.orm.jdbc.bind: WARN       # never print bound parameter values (names, phones, device numbers)
+    org.springframework.web: INFO
+    org.apache.tomcat: WARN
+
+app:
+  security:
+    device-hmac-key: ${DEVICE_HMAC_KEY}
+    device-hmac-key-version: ${DEVICE_HMAC_KEY_VERSION:1}
+    # Old keys, only while rotating: "1:<old key>" (comma separated for more than one). See README, Key rotation.
+    device-hmac-previous-keys: ${DEVICE_HMAC_PREVIOUS_KEYS:}
+    device-encryption-key: ${DEVICE_ENCRYPTION_KEY}
+    device-encryption-key-version: ${DEVICE_ENCRYPTION_KEY_VERSION:1}
+    device-encryption-previous-keys: ${DEVICE_ENCRYPTION_PREVIOUS_KEYS:}
+    status-token-ttl-hours: 24
+  auth:
+    # Staff sign-in (email and password). A session ends after this long without a request, or at the absolute limit.
+    session-idle-minutes: ${STAFF_SESSION_IDLE_MINUTES:30}
+    session-max-hours: ${STAFF_SESSION_MAX_HOURS:12}
+    # After this many wrong passwords in a row the account is locked for lockout-minutes.
+    max-failed-logins: 5
+    lockout-minutes: 15
+    # BCrypt cost. 12 is a sound default; the code never goes below 10. If sign-in feels slow on a small free server, 10 is the floor.
+    bcrypt-strength: ${BCRYPT_STRENGTH:12}
+  bootstrap:
+    # First staff accounts. An account is created only when BOTH its email and password are set, and the password is
+    # only used for an account that has none. It must be changed at first sign-in. Remove the password settings after that.
+    claim-admin-email: ${BOOTSTRAP_CLAIM_ADMIN_EMAIL:}
+    claim-admin-password: ${BOOTSTRAP_CLAIM_ADMIN_PASSWORD:}
+    product-manager-email: ${BOOTSTRAP_PRODUCT_MANAGER_EMAIL:}
+    product-manager-password: ${BOOTSTRAP_PRODUCT_MANAGER_PASSWORD:}
+  maintenance:
+    # true = on this start, move every stored claim to the current keys (KeyRotationRunner), then set it back to false.
+    rotate-keys: ${ROTATE_KEYS:false}
+  limits:
+    max-request-bytes: 16384
+  retention:
+    enabled: ${RETENTION_ENABLED:true}
+    # While true the routine only counts and logs what it WOULD erase. Set RETENTION_DRY_RUN=false to make it real.
+    dry-run: ${RETENTION_DRY_RUN:true}
+    personal-data-months: ${RETENTION_PERSONAL_DATA_MONTHS:24}   # 0 = never erase personal data
+    idempotency-days: 7
+    # true keeps the keyed device key on erased claims, so a device can still claim only once. See README.
+    keep-device-key: ${RETENTION_KEEP_DEVICE_KEY:true}
+    cron: "${RETENTION_CRON:0 30 2 * * *}"      # every day 02:30 in app.shop.timezone
+    batch-size: 200
+    max-per-run: 2000
+  rate-limit:
+    # How many proxies in front of this app append to X-Forwarded-For. Verify after deploy (README, Phase 7 checks).
+    trusted-proxy-hops: ${TRUSTED_PROXY_HOPS:1}
+    claims-global-per-window: 300
+    lookups-global-per-window: 300
+    claims-per-window: 10
+    lookups-per-window: 15
+    product-lookups-per-window: 30         # customers finding their product by IMEI or serial number, per IP
+    scratch-per-window: 20
+    login-per-window: 10                   # staff sign-in and password change, per IP
+    status-per-window: 600
+    window-minutes: 10
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  shop:
+    timezone: Asia/Kolkata
+  reports:
+
+    # Optional TTF for non-Latin names, e.g. classpath:fonts/NotoSansDevanagari-Regular.ttf or /path/to/font.ttf
+    font-path: ${REPORT_FONT_PATH:}
+    scheduler-enabled: true
+
+    cron: "0 5 0 * * *"
+    # First month to report, named by the data month: 2026-10 = October data, sent on 1 Nov. Empty = no limit.
+    start-month: ${REPORT_START_MONTH:}
+    max-attempts: 4
+    initial-backoff-ms: 2000
+    max-backoff-ms: 60000
+    lease-minutes: 10
+    telegram:
+      bot-token: ${TELEGRAM_BOT_TOKEN:}
+      chat-id: ${TELEGRAM_CHAT_ID:}
+      alert-chat-id: ${TELEGRAM_ALERT_CHAT_ID:}
+      api-base: ${TELEGRAM_API_BASE:https://api.telegram.org}
+
+---
+# dev: local development on your computer.
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+---
+# prod: the deployed server.
+spring:
+  config:
+    activate:
+      on-profile: prod
