@@ -24,19 +24,13 @@ jobs:
       DB_USER: ${{ secrets.DB_USER }}
       MYSQL_PWD: ${{ secrets.DB_PASSWORD }}
       AGE_PUBLIC_KEY: ${{ secrets.AGE_PUBLIC_KEY }}
-      R2_BUCKET: ${{ secrets.R2_BUCKET }}
-      RCLONE_CONFIG_R2_TYPE: s3
-      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
     steps:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mysql-client age rclone
+          sudo apt-get install -y -qq mysql-client age
 
-      - name: Dump, verify, encrypt, upload
+      - name: Dump, verify, encrypt
         run: |
           set -euo pipefail
 
@@ -60,19 +54,18 @@ jobs:
           fi
           echo "Dump OK: ${SIZE} bytes, ${TABLES} tables."
 
-          # Encrypt before it leaves this machine.
-          age -r "$AGE_PUBLIC_KEY" -o "${FILE}.age" "$FILE"
+          # Encrypt before it is stored anywhere.
+          mkdir -p out
+          age -r "$AGE_PUBLIC_KEY" -o "out/${FILE}.age" "$FILE"
           rm "$FILE"
+          ls -l out
 
-          # Daily copy, plus a monthly copy on the 1st.
-          rclone copyto "${FILE}.age" "r2:${R2_BUCKET}/daily/${FILE}.age"
-          if [ "$(date -u +%d)" = "01" ]; then
-            rclone copyto "${FILE}.age" "r2:${R2_BUCKET}/monthly/${FILE}.age"
-          fi
-
-          # Keep 30 days of dailies and about 13 months of monthlies.
-          rclone delete "r2:${R2_BUCKET}/daily" --min-age 30d
-          rclone delete "r2:${R2_BUCKET}/monthly" --min-age 400d
-
-          echo "Uploaded ${FILE}.age"
-          rclone ls "r2:${R2_BUCKET}/daily" | tail -n 5
+      # Stored as a GitHub Actions artifact (private to your repo, encrypted with age).
+      # GitHub keeps artifacts for at most 90 days, then deletes them.
+      - name: Upload encrypted backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup
+          path: out/*.age
+          retention-days: 90
+          if-no-files-found: error
