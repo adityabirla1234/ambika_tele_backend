@@ -9,7 +9,10 @@ RUN mvn -q -B -DskipTests package
 # Run stage
 FROM eclipse-temurin:21-jre
 WORKDIR /app
+# Do not run as root
+RUN useradd --system --no-create-home appuser
 COPY --from=build /app/target/rewards-0.1.0.jar app.jar
+USER appuser
 ENV SPRING_PROFILES_ACTIVE=prod
 EXPOSE 8080
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-Xmx300m", "-XX:MaxMetaspaceSize=128m", "-XX:+UseSerialGC", "-Xss512k", "-Djava.awt.headless=true", "-jar", "app.jar"]
