@@ -48,6 +48,8 @@ public class StaffAuthService {
     /** Keep the audit "actor" column (80 characters) from overflowing. */
     public static final int MAX_EMAIL_LENGTH = 80;
     private static final Duration TOUCH_EVERY = Duration.ofSeconds(60);
+    private static final Duration CLEANUP_EVERY = Duration.ofHours(1);
+    private final java.util.concurrent.atomic.AtomicLong lastCleanupMillis = new java.util.concurrent.atomic.AtomicLong(0);
 
     private final StaffUserRepository users;
     private final StaffSessionRepository sessions;
@@ -116,13 +118,30 @@ public class StaffAuthService {
             throw invalidLogin();
         }
 
-        users.recordLogin(user.getId(), now);
-        sessions.deleteExpiredBefore(now.minus(Duration.ofDays(1))); // housekeeping
         String token = newToken();
         Instant expires = now.plus(maxAge);
-        sessions.save(new StaffSession(user, sha256(token), now, expires));
-        audit.record("STAFF_LOGIN", "STAFF_USER", user.getId(), user.getEmail(), null);
+        final StaffUser signedIn = user;
+        // One transaction for the whole success path: one commit instead of four, which matters because every
+        // round trip to the (remote) database costs real time.
+        tx.executeWithoutResult(status -> {
+            users.recordLogin(signedIn.getId(), now);
+            sessions.save(new StaffSession(signedIn, sha256(token), now, expires));
+            audit.record("STAFF_LOGIN", "STAFF_USER", signedIn.getId(), signedIn.getEmail(), null);
+        });
+        cleanUpOldSessionsOccasionally(now);
         return new LoginResult(token, expires, profileOf(user));
+    }
+
+    /** Housekeeping at most once an hour, not on every sign-in. Failure here must never break a sign-in. */
+    private void cleanUpOldSessionsOccasionally(Instant now) {
+        long last = lastCleanupMillis.get();
+        long nowMs = now.toEpochMilli();
+        if (nowMs - last < CLEANUP_EVERY.toMillis() || !lastCleanupMillis.compareAndSet(last, nowMs)) return;
+        try {
+            sessions.deleteExpiredBefore(now.minus(Duration.ofDays(1)));
+        } catch (RuntimeException ignored) {
+            // retried at the next hourly sign-in
+        }
     }
 
     private void recordFailure(StaffUser user) {
