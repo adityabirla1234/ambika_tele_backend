@@ -1,0 +1,83 @@
+name: DB keep-alive
+
+on:
+  schedule:
+    # Every 6 hours (UTC). Aiven free services can be powered off after a day without activity.
+    - cron: "15 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      MYSQL_PWD: ${{ secrets.DB_PASSWORD }}
+      # Optional. Only needed for the automatic power-on fallback.
+      AIVEN_TOKEN: ${{ secrets.AIVEN_TOKEN }}
+      AIVEN_PROJECT: ${{ secrets.AIVEN_PROJECT }}
+      AIVEN_SERVICE: ${{ secrets.AIVEN_SERVICE }}
+    steps:
+      - name: Install MySQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mysql-client
+
+      - name: Run real queries
+        id: ping
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" --ssl-mode=REQUIRED \
+                 --connect-timeout=20 "$DB_NAME" \
+                 -e "SELECT 1; SELECT COUNT(*) AS tables_found FROM information_schema.tables WHERE table_schema = DATABASE();"; then
+              echo "Database is reachable (attempt ${attempt})."
+              exit 0
+            fi
+            echo "Attempt ${attempt} failed, waiting 20s..."
+            sleep 20
+          done
+          exit 1
+
+      - name: Try to power the service on (only if the ping failed)
+        if: steps.ping.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          if [ -z "${AIVEN_TOKEN}" ] || [ -z "${AIVEN_PROJECT}" ] || [ -z "${AIVEN_SERVICE}" ]; then
+            echo "Ping failed and no Aiven API secrets are set. Power the service on from the Aiven console."
+            exit 1
+          fi
+
+          echo "Requesting power-on for ${AIVEN_SERVICE}..."
+          curl -sS -X PUT \
+            -H "Authorization: aivenv1 ${AIVEN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"powered": true}' \
+            "https://api.aiven.io/v1/project/${AIVEN_PROJECT}/service/${AIVEN_SERVICE}" > /dev/null
+
+          # A powered-off service needs a few minutes to start.
+          for i in $(seq 1 20); do
+            sleep 30
+            if mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" --ssl-mode=REQUIRED \
+                 --connect-timeout=20 "$DB_NAME" -e "SELECT 1;" > /dev/null 2>&1; then
+              echo "Service is back after about $((i * 30)) seconds."
+              break
+            fi
+          done
+
+      - name: Fail loudly if the database was down
+        if: steps.ping.outcome == 'failure'
+        run: |
+          echo "The database was unreachable during this run. Check the Aiven console and your app data."
+          exit 1
