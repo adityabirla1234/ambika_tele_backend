@@ -177,9 +177,12 @@ public class StaffAuthService {
 
     public void logout(String token, String email) {
         if (token == null) return;
-        if (sessions.revokeByTokenHash(sha256(token), Instant.now()) > 0) {
-            audit.record("STAFF_LOGOUT", "STAFF_USER", null, email, null);
-        }
+        // One transaction (one commit) for the revoke and its audit row.
+        tx.executeWithoutResult(status -> {
+            if (sessions.revokeByTokenHash(sha256(token), Instant.now()) > 0) {
+                audit.record("STAFF_LOGOUT", "STAFF_USER", null, email, null);
+            }
+        });
     }
 
     public void changePassword(SessionPrincipal who, String currentPassword, String newPassword) {
