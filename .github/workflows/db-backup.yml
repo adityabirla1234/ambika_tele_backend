@@ -1,0 +1,78 @@
+name: DB backup
+
+on:
+  schedule:
+    # GitHub cron is UTC. 21:30 UTC = 03:00 IST.
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      MYSQL_PWD: ${{ secrets.DB_PASSWORD }}
+      AGE_PUBLIC_KEY: ${{ secrets.AGE_PUBLIC_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mysql-client age rclone
+
+      - name: Dump, verify, encrypt, upload
+        run: |
+          set -euo pipefail
+
+          STAMP=$(date -u +%Y-%m-%d_%H%M)
+          FILE="ambika-${STAMP}.sql.gz"
+
+          mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" \
+            --ssl-mode=REQUIRED --single-transaction --routines --no-tablespaces \
+            "$DB_NAME" | gzip > "$FILE"
+
+          # Refuse to store an empty or broken dump.
+          SIZE=$(stat -c%s "$FILE")
+          if [ "$SIZE" -lt 1024 ]; then
+            echo "Dump is only ${SIZE} bytes, something is wrong."
+            exit 1
+          fi
+          TABLES=$(zcat "$FILE" | grep -c "CREATE TABLE" || true)
+          if [ "$TABLES" -lt 1 ]; then
+            echo "Dump contains no CREATE TABLE statements."
+            exit 1
+          fi
+          echo "Dump OK: ${SIZE} bytes, ${TABLES} tables."
+
+          # Encrypt before it leaves this machine.
+          age -r "$AGE_PUBLIC_KEY" -o "${FILE}.age" "$FILE"
+          rm "$FILE"
+
+          # Daily copy, plus a monthly copy on the 1st.
+          rclone copyto "${FILE}.age" "r2:${R2_BUCKET}/daily/${FILE}.age"
+          if [ "$(date -u +%d)" = "01" ]; then
+            rclone copyto "${FILE}.age" "r2:${R2_BUCKET}/monthly/${FILE}.age"
+          fi
+
+          # Keep 30 days of dailies and about 13 months of monthlies.
+          rclone delete "r2:${R2_BUCKET}/daily" --min-age 30d
+          rclone delete "r2:${R2_BUCKET}/monthly" --min-age 400d
+
+          echo "Uploaded ${FILE}.age"
+          rclone ls "r2:${R2_BUCKET}/daily" | tail -n 5
